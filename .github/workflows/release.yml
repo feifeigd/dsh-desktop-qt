@@ -36,7 +36,11 @@ permissions:
   contents: write
 
 env:
-  QT_VERSION: '6.11.1'        # matches local build (Qt msvc2022_64)
+  # CI uses Qt 6.10.3 (latest 6.10 patch, old repo layout that aqt 3.3.0
+  # supports). Qt 6.11+ switched the online repo to per-toolchain dirs
+  # (qt6_6111_msvc2022_64/) which aqt 3.3.0 cannot read yet. API-compatible
+  # with the 6.11.1 used for local dev builds.
+  QT_VERSION: '6.10.3'        # matches local build (Qt msvc2022_64)
   NODE_VERSION: '24.9.0'      # embedded portable Node (win-x64)
   DSH_VERSION: '0.1.0-rc.6'   # @deepseek-ai/dsh harness version
 
