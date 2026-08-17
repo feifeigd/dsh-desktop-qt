@@ -1,3 +1,13 @@
+# Build artifacts
 build-release/
 deploy/
+dist/
+
+# NSIS / packaging temp
+*.exe.old.bak
+*.tar
+*.log
+
+# Qt / IDE
 *.user
+*.autosave
