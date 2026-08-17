@@ -71,7 +71,9 @@ jobs:
         with:
           version: ${{ env.QT_VERSION }}
           arch: win64_msvc2022_64
-          modules: qtwebengine qtdeclarative qtwebchannel
+          # Qt 6.10+ merged qtdeclarative into qtbase, so only the
+          # WebEngine extras are needed here.
+          modules: qtwebengine qtwebchannel
           cache: true
 
       # --- Embedded portable Node (zero client env) -------------------
