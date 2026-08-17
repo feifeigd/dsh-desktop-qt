@@ -19,15 +19,18 @@
 name: Build & Release
 
 on:
+  # Push to main -> build + upload artifact (CI check, no Release)
+  push:
+    branches:
+      - 'main'
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
         description: 'Version to build (artifact only, no GitHub Release)'
         required: false
         default: '0.1.0'
-  push:
-    tags:
-      - 'v*'
 
 permissions:
   contents: write
