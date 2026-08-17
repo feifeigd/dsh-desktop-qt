@@ -199,7 +199,11 @@ jobs:
       - name: Build installer
         shell: pwsh
         run: |
-          & "C:\Program Files (x86)\NSIS\makensis.exe" /NOCD /V2 installer\dsh-desktop.nsi
+          # No /NOCD here: makensis then resolves the relative paths in the
+          # .nsi (..\deploy\*, ..\dist\) against installer/ itself, which is
+          # what the script assumes. Local builds cd into installer/ + /NOCD
+          # for the same effect.
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /V2 installer\dsh-desktop.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Item dist\DSHDesktop-Setup-*.exe | Select-Object Name, Length
 
