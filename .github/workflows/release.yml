@@ -129,7 +129,9 @@ jobs:
           Write-Output ("dsh bin.js: " + (Test-Path (Join-Path $ds 'dsh\lib\bin.js')))
           Write-Output ("koffi-win32: " + (Test-Path (Join-Path $nm '@koromix\koffi-win32-x64')))
           Write-Output ("sharp-win32: " + (Test-Path (Join-Path $nm '@img\sharp-win32-x64')))
-          Write-Output ("node-pty win32: " + (Test-Path (Join-Path $nm '@homebridge\node-pty-prebuilt-multiarch\prebuilds\win32-x64') -or (Test-Path (Join-Path $nm 'node-pty'))))
+          $pty = Test-Path (Join-Path $nm 'node-pty')
+          $pty2 = Test-Path (Join-Path $nm '@homebridge\node-pty-prebuilt-multiarch')
+          Write-Output ("node-pty present: " + ($pty -or $pty2))
 
       # --- Qt shell build (MSVC 2022, Release, WIN32 no console) ------
       - name: Configure & build
