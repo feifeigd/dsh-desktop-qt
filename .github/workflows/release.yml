@@ -74,9 +74,9 @@ jobs:
           # Fixed dir so downstream steps can use known paths
           # (C:\Qt\<ver>\msvc2022_64) instead of action env vars.
           dir: 'C:/Qt'
-          # Qt 6.10+ merged qtdeclarative into qtbase, so only the
-          # WebEngine extras are needed here.
-          modules: qtwebengine qtwebchannel
+          # Qt 6.10+ merged qtdeclarative into qtbase; qtwebengine pulls in
+          # qtwebchannel + qtpositioning as hard deps.
+          modules: qtwebengine qtwebchannel qtpositioning
           cache: true
 
       # --- Embedded portable Node (zero client env) -------------------
@@ -148,11 +148,18 @@ jobs:
           $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if (-not $vsPath) { throw "No Visual Studio with VC tools found" }
           Write-Output "VS installation: $vsPath"
+          # Locate the Qt root by finding qmake under C:\Qt (the action's
+          # dir arg nests an extra Qt folder, so don't hardcode the path).
+          $qmake = Get-ChildItem 'C:\Qt' -Recurse -Filter qmake.exe -Depth 5 -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'msvc2022_64' } | Select-Object -First 1
+          if (-not $qmake) { throw "qmake not found under C:\Qt" }
+          $qtRoot = $qmake.DirectoryName -replace '\\bin$', ''
+          Write-Output "Qt root: $qtRoot"
           @"
           @echo off
           call "$vsPath\VC\Auxiliary\Build\vcvarsall.bat" x64
           if errorlevel 1 exit /b 1
-          cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=C:\Qt\${{ env.QT_VERSION }}\msvc2022_64"
+          cmake -S . -B build-release -G Ninja -DCMAKE_BUILD_TYPE=Release "-DCMAKE_PREFIX_PATH=$qtRoot"
           if errorlevel 1 exit /b 1
           cmake --build build-release --config Release
           if errorlevel 1 exit /b 1
@@ -164,8 +171,12 @@ jobs:
       - name: Deploy Qt runtime
         shell: pwsh
         run: |
+          $qmake = Get-ChildItem 'C:\Qt' -Recurse -Filter qmake.exe -Depth 5 -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'msvc2022_64' } | Select-Object -First 1
+          if (-not $qmake) { throw "qmake not found under C:\Qt" }
+          $qtRoot = $qmake.DirectoryName -replace '\\bin$', ''
           Copy-Item build-release\DSHDesktop.exe deploy\ -Force
-          & "C:\Qt\${{ env.QT_VERSION }}\msvc2022_64\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw deploy\DSHDesktop.exe
+          & "$qtRoot\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw deploy\DSHDesktop.exe
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force deploy\plugins | Out-Null
           Copy-Item build-release\plugins\demo_plugin.dll deploy\plugins\ -Force
