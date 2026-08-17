@@ -173,6 +173,7 @@ void HarnessProcess::startInternal()
     qInfo() << "[harness] launching:" << m_proc->program() << args.join(' ')
             << "DSH_HOME=" << dshHome();
     emit statusChanged(QStringLiteral("启动 DeepSeek Harness（端口 %1）…").arg(m_webPort));
+    m_proc->setArguments(args);
     m_proc->start();
 }
 
@@ -327,6 +328,7 @@ void HarnessProcess::onProcessError(QProcess::ProcessError error)
     if (error == QProcess::FailedToStart) {
         setError(QStringLiteral("进程启动失败：%1").arg(m_proc->errorString()));
         m_readyTimer->stop();
+        qInfo() << "[harness] process error:" << error << m_proc->errorString();
         emit failed(m_error);
     }
 }
@@ -334,7 +336,9 @@ void HarnessProcess::onProcessError(QProcess::ProcessError error)
 void HarnessProcess::onProcessFinished(int exitCode, QProcess::ExitStatus status)
 {
     m_readyTimer->stop();
-    emit statusChanged(QStringLiteral("dsh 已退出（代码 %1）").arg(exitCode));
+    const QString msg = QStringLiteral("dsh 进程已退出（代码 %1）").arg(exitCode);
+    emit statusChanged(msg);
+    qInfo() << "[harness]" << msg;   // must land in the log file (no console in release)
     if (status == QProcess::CrashExit && !m_restarting)
         emit logLine(QStringLiteral("dsh 崩溃；可通过菜单重新启动。"));
 }

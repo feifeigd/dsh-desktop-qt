@@ -35,7 +35,10 @@ QString SysInfoPlugin::collectStats()
                        "Write-Output ('CPU%: {0}%' -f $cpu);"
                        "Write-Output ('MEM: {0:N1}/{1:N1} GB' -f (($m.TotalVisibleMemorySize-$m.FreePhysicalMemory)/1MB),(($m.TotalVisibleMemorySize)/1MB))")
     });
-    ps.waitForFinished(4000);
+    if (!ps.waitForFinished(4000)) {
+        ps.kill();
+        ps.waitForFinished(2000);
+    }
     out += QString::fromLocal8Bit(ps.readAllStandardOutput()).trimmed();
     if (out.endsWith(QLatin1String("DSH Desktop demo plugin\n\n")))
         out += QStringLiteral("(无法读取系统统计)");
@@ -44,7 +47,10 @@ QString SysInfoPlugin::collectStats()
     ps.start(QStringLiteral("sh"), {QStringLiteral("-c"),
             QStringLiteral("echo -n 'CPU: '; top -bn1 | grep 'Cpu(s)' | head -1; "
                            "echo -n 'MEM: '; free -h | awk 'NR==2{print $3\"/\"$2}'")});
-    ps.waitForFinished(4000);
+    if (!ps.waitForFinished(4000)) {
+        ps.kill();
+        ps.waitForFinished(2000);
+    }
     out += QString::fromUtf8(ps.readAllStandardOutput()).trimmed();
 #endif
     return out;

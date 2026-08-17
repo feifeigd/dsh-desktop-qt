@@ -86,3 +86,10 @@ $LOCALAPPDATA\Programs\DSH Desktop\
    参数已加；不加则 `--expose-internals is required for HMR service`
 10. **WSL 探测 Windows 进程端口会失败**：WSL2 网络隔离，验证 Windows 侧
     服务要用 PowerShell（Get-NetTCPConnection / Invoke-WebRequest）
+11. **QProcess 参数没传**：setProgram() 后必须 setArguments()，否则 node
+    无参启动静默退出（日志看着正常、进程秒死）——修 bug 先怀疑参数传递
+12. **Windows 无法覆盖运行中的 exe**：build-win.bat 拷贝 deploy 失败时
+    不会报错，导致"编译了新代码但装进包的是旧 exe"。验证 deploy 文件
+    时间戳必须 == build-release 时间戳；被占用时 rename 旧文件再拷
+13. **QStringLiteral 是 UTF-16**：strings 默认查 ASCII 查不到，要用
+    strings -e l 验证二进制里是否真的包含新代码字符串

@@ -8,6 +8,7 @@
 #include <QDateTime>
 #include <QFile>
 #include <QIcon>
+#include <QLockFile>
 #include <QMessageBox>
 #include <QMutex>
 #include <QPixmap>
@@ -36,6 +37,22 @@ static void fileLogHandler(QtMsgType type, const QMessageLogContext &ctx, const 
 
 int main(int argc, char *argv[])
 {
+    // Single-instance: multiple copies writing the same log / starting the same
+    // embedded dsh on the same port would corrupt state. Lock in %APPDATA% and
+    // keep the QLockFile alive for the whole process (static, never released).
+    {
+        static QLockFile *s_lock = nullptr;
+        const QString lockPath = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
+            + QStringLiteral("/DSH/DSHDesktop/app.lock");
+        QDir().mkpath(QFileInfo(lockPath).absolutePath());
+        s_lock = new QLockFile(lockPath);
+        s_lock->setStaleLockTime(0); // never auto-steal; owner holds it for life
+        if (!s_lock->tryLock(100)) {
+            QMessageBox::warning(nullptr, QStringLiteral("DSH Desktop"),
+                                 QStringLiteral("DSH Desktop 已在运行。\n请从系统托盘打开现有窗口。"));
+            return 1;
+        }
+    }
     {
         const QString logDir = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation)
             + QStringLiteral("/DSH/DSHDesktop/logs");
