@@ -1,0 +1,173 @@
+# ============================================================
+#  DSH Desktop - Build & Release workflow
+#
+#  Trigger:
+#    * push tag vX.Y.Z  -> builds installer, publishes GitHub Release
+#    * manual dispatch  -> builds installer, uploads as artifact only
+#
+#  Output: dist/DSHDesktop-Setup-<version>.exe (NSIS one-click installer,
+#  bundles Qt shell + embedded portable Node + dsh harness, zero client env)
+#
+#  Notes:
+#    * Runs on windows-latest (needs MSVC 2022 + Qt msvc2022_64)
+#    * CI runs in GitHub's US datacenters -> npm official registry is used
+#      here (fastest). The npmmirror default lives in runtime/tools/update.js
+#      for end users in CN.
+#    * The dsh node_modules tree is cached so tag rebuilds skip the
+#      ~15min npm install.
+# ============================================================
+name: Build & Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build (artifact only, no GitHub Release)'
+        required: false
+        default: '0.1.0'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  QT_VERSION: '6.11.1'        # matches local build (Qt msvc2022_64)
+  NODE_VERSION: '24.9.0'      # embedded portable Node (win-x64)
+  DSH_VERSION: '0.1.0-rc.6'   # @deepseek-ai/dsh harness version
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ('${{ github.event_name }}' -eq 'push') {
+            $v = '${{ github.ref_name }}' -replace '^v', ''
+          } else {
+            $v = '${{ github.event.inputs.version }}'
+          }
+          "value=$v" | Out-File -Append $env:GITHUB_OUTPUT
+          "is_prerelease=$([bool]($v -match 'rc|beta|alpha|pre'))" | Out-File -Append $env:GITHUB_OUTPUT
+          Write-Output "Building version: $v"
+
+      # --- Qt 6.11.1 msvc2022_64 + WebEngine (installs to C:\Qt, same
+      #     layout as the local build machine) ------------------------
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: ${{ env.QT_VERSION }}
+          arch: win64_msvc2022_64
+          modules: qtwebengine qtdeclarative qtwebchannel
+          cache: true
+
+      # --- Embedded portable Node (zero client env) -------------------
+      - name: Download portable Node
+        shell: pwsh
+        run: |
+          $zip = "$env:RUNNER_TEMP\node.zip"
+          curl.exe -L --retry 3 -o $zip "https://nodejs.org/dist/v$env:NODE_VERSION/node-v$env:NODE_VERSION-win-x64.zip"
+          tar -xf $zip -C "$env:RUNNER_TEMP"
+          New-Item -ItemType Directory -Force deploy\runtime\node | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\node-v$env:NODE_VERSION-win-x64\*" deploy\runtime\node -Recurse -Force
+          Get-Item deploy\runtime\node\node.exe, deploy\runtime\node\node_modules\npm\bin\npm-cli.js | Select-Object Name, Length
+
+      # --- Stage deploy dir: tools, TS plugin (prebuilt), VC++ redist --
+      - name: Stage deploy extras
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force deploy\runtime\tools, deploy\tsplugins | Out-Null
+          Copy-Item runtime\tools\* deploy\runtime\tools\ -Force
+          Copy-Item tsplugins\dsh-desktop-demo deploy\tsplugins\ -Recurse -Force
+          curl.exe -L --retry 3 -o deploy\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+          Get-Item deploy\runtime\tools\provision.js, deploy\runtime\tools\update.js, deploy\tsplugins\dsh-desktop-demo\lib\index.js, deploy\vc_redist.x64.exe | Select-Object Name, Length
+
+      # --- dsh harness (win32 native modules resolved by npm) ---------
+      - name: Cache dsh node_modules
+        id: dsh-cache
+        uses: actions/cache@v4
+        with:
+          path: deploy/runtime/dsh/node_modules
+          key: dsh-${{ env.DSH_VERSION }}-${{ runner.os }}
+
+      - name: Install dsh harness
+        if: steps.dsh-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force deploy\runtime\dsh | Out-Null
+          Set-Location deploy\runtime\dsh
+          & "..\node\node.exe" "..\node\node_modules\npm\bin\npm-cli.js" init -y | Out-Null
+          & "..\node\node.exe" "..\node\node_modules\npm\bin\npm-cli.js" install "@deepseek-ai/dsh@$env:DSH_VERSION" --no-audit --no-fund
+          Set-Location $env:GITHUB_WORKSPACE
+
+      - name: Verify dsh tree
+        shell: pwsh
+        run: |
+          $nm = 'deploy\runtime\dsh\node_modules'
+          $ds = Join-Path $nm '@deepseek-ai'
+          Write-Output ("@deepseek-ai packages: " + (Get-ChildItem $ds -Directory | Measure-Object).Count)
+          Write-Output ("dsh bin.js: " + (Test-Path (Join-Path $ds 'dsh\lib\bin.js')))
+          Write-Output ("koffi-win32: " + (Test-Path (Join-Path $nm '@koromix\koffi-win32-x64')))
+          Write-Output ("sharp-win32: " + (Test-Path (Join-Path $nm '@img\sharp-win32-x64')))
+          Write-Output ("node-pty win32: " + (Test-Path (Join-Path $nm '@homebridge\node-pty-prebuilt-multiarch\prebuilds\win32-x64') -or (Test-Path (Join-Path $nm 'node-pty'))))
+
+      # --- Qt shell build (MSVC 2022, Release, WIN32 no console) ------
+      - name: Configure & build
+        shell: pwsh
+        run: |
+          $env:PATH = "${{ env.Qt6_DIR }}\bin;$env:PATH"
+          cmake -S . -B build-release -G "Visual Studio 17 2022" -A x64 "-DCMAKE_PREFIX_PATH=${{ env.Qt6_DIR }}"
+          cmake --build build-release --config Release
+
+      # --- windeployqt + stage into deploy ----------------------------
+      - name: Deploy Qt runtime
+        shell: pwsh
+        run: |
+          Copy-Item build-release\DSHDesktop.exe deploy\ -Force
+          & "${{ env.Qt6_DIR }}\bin\windeployqt.exe" --release --no-translations --no-system-d3d-compiler --no-opengl-sw deploy\DSHDesktop.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force deploy\plugins | Out-Null
+          Copy-Item build-release\plugins\demo_plugin.dll deploy\plugins\ -Force
+          Get-ChildItem deploy | Select-Object Name, Length | Format-Table -AutoSize
+
+      # --- NSIS installer ----------------------------------------------
+      - name: Patch NSI version
+        shell: pwsh
+        run: |
+          $nsi = 'installer\dsh-desktop.nsi'
+          $content = Get-Content $nsi -Raw
+          $content = $content -replace 'APP_VERSION "[^"]*"', "APP_VERSION `"${{ steps.ver.outputs.value }}`""
+          Set-Content $nsi $content -NoNewline -Encoding utf8
+          Select-String -Path $nsi -Pattern 'APP_VERSION'
+
+      - name: Install NSIS
+        shell: pwsh
+        run: choco install nsis -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\NSIS\makensis.exe" /NOCD /V2 installer\dsh-desktop.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-Item dist\DSHDesktop-Setup-*.exe | Select-Object Name, Length
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSHDesktop-Setup-${{ steps.ver.outputs.value }}
+          path: dist/DSHDesktop-Setup-*.exe
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/DSHDesktop-Setup-*.exe
+          prerelease: ${{ steps.ver.outputs.is_prerelease }}
+          generate_release_notes: true
