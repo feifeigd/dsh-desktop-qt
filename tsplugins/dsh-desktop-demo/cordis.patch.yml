@@ -1,0 +1,6 @@
+# Patch layer contributed by the dsh-desktop-demo bundle.
+# Inserts one row: mount the demo plugin module by its bare package name
+# (resolved through the profile's node_modules).
+- insert:
+    - id: dsh-desktop-demo
+      name: dsh-desktop-demo
