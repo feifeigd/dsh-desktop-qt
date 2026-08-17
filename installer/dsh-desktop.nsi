@@ -1,5 +1,5 @@
 ; ============================================================
-;  DSH Desktop — one-click installer (NSIS 3.x)
+;  DSH Desktop - one-click installer (NSIS 3.x)
 ;  Bundles: DSHDesktop.exe + Qt runtime + embedded Node.js +
 ;           dsh harness + native plugins + TS plugin demos
 ;  Install layout:
@@ -50,37 +50,14 @@ Section "DSH Desktop (required)" SecApp
   SectionIn RO
   SetOutPath "$INSTDIR"
 
-  ; Qt app + platform plugins + WebEngine resources
-  File /r "..\deploy\*.dll"
-  File /r "..\deploy\*.exe"
-  File /r "..\deploy\translations"
-  File /r "..\deploy\platforms"
-  File /r "..\deploy\resources"
-  File /r "..\deploy\iconengines"
-  File /r "..\deploy\imageformats"
-  File /r "..\deploy\styles"
-  File /r "..\deploy\QtWebEngineProcess.exe"
-  File /r "..\deploy\libEGL.dll"
-  File /r "..\deploy\libGLESv2.dll"
-  File /r "..\deploy\d3dcompiler_47.dll"
-  File /r "..\deploy\opengl32sw.dll"
-  File /r "..\deploy\vc_redist.x64.exe"
+  ; Everything windeployqt produced + the embedded runtime + plugins.
+  ; The deploy dir layout is copied verbatim:
+  ;   DSHDesktop.exe, Qt*.dll, QtWebEngineProcess.exe, platforms/,
+  ;   resources/, translations/, ..., plugins/, tsplugins/, runtime/
+  File /r "..\deploy\*"
 
-  ; Native Qt plugins
-  SetOutPath "$INSTDIR\plugins"
-  File /r "..\deploy\plugins\*"
-
-  ; TS plugin bundles
-  SetOutPath "$INSTDIR\tsplugins"
-  File /r "..\deploy\tsplugins\*"
-
-  ; Embedded runtime: node.exe + npm + dsh + tools
-  SetOutPath "$INSTDIR\runtime\node"
-  File /r "..\deploy\runtime\node\*"
-  SetOutPath "$INSTDIR\runtime\dsh"
-  File /r "..\deploy\runtime\dsh\*"
-  SetOutPath "$INSTDIR\runtime\tools"
-  File /r "..\deploy\runtime\tools\*"
+  ; VC++ redistributable (install quietly if the system lacks it)
+  File "..\deploy\vc_redist.x64.exe"
 
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
@@ -122,7 +99,7 @@ SectionEnd
 
 Function .onInit
   ${IfNot} ${RunningX64}
-    MessageBox MB_OK|MB_ICONSTOP "DSH Desktop 需要 64 位 Windows。"
+    MessageBox MB_OK|MB_ICONSTOP "DSH Desktop requires 64-bit Windows."
     Abort
   ${EndIf}
 FunctionEnd

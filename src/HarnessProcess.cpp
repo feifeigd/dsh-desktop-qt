@@ -157,7 +157,9 @@ void HarnessProcess::startInternal()
     QStringList args;
     if (!nodeBin.isEmpty()) {
         m_proc->setProgram(nodeBin);
-        args << dshBin << QStringLiteral("web") << QStringLiteral("--port") << QString::number(m_webPort);
+        // dsh's HMR service requires node --expose-internals.
+        args << QStringLiteral("--expose-internals")
+             << dshBin << QStringLiteral("web") << QStringLiteral("--port") << QString::number(m_webPort);
     } else if (dshBin.endsWith(QStringLiteral("npx.cmd")) || dshBin.endsWith(QStringLiteral("npx.exe"))
                || dshBin.endsWith(QStringLiteral("npx"))) {
         m_proc->setProgram(dshBin);

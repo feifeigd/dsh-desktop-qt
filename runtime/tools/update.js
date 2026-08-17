@@ -27,7 +27,8 @@ if (!RUNTIME) {
   process.exit(2);
 }
 
-const REGISTRY = (process.env.DSH_UPDATE_REGISTRY || 'https://registry.npmjs.org').replace(/\/$/, '');
+// Default to npmmirror (China-friendly); override with DSH_UPDATE_REGISTRY.
+const REGISTRY = (process.env.DSH_UPDATE_REGISTRY || 'https://registry.npmmirror.com').replace(/\/$/, '');
 const DSH_DIR = path.join(RUNTIME, 'dsh');
 const DSH_PKG_JSON = path.join(DSH_DIR, 'node_modules', '@deepseek-ai', 'dsh', 'package.json');
 const PKG_NAME = '@deepseek-ai/dsh';
