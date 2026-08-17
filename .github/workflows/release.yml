@@ -94,7 +94,12 @@ jobs:
           New-Item -ItemType Directory -Force deploy\runtime\tools, deploy\tsplugins | Out-Null
           Copy-Item runtime\tools\* deploy\runtime\tools\ -Force
           Copy-Item tsplugins\dsh-desktop-demo deploy\tsplugins\ -Recurse -Force
-          curl.exe -L --retry 3 -o deploy\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+          # aka.ms CDN can drop mid-transfer; retry on any error and
+          # verify the file is actually complete (~25MB).
+          curl.exe -L --retry 5 --retry-all-errors --retry-delay 3 -o deploy\vc_redist.x64.exe https://aka.ms/vs/17/release/vc_redist.x64.exe
+          if ($LASTEXITCODE -ne 0) { throw "vc_redist download failed: $LASTEXITCODE" }
+          $vcr = Get-Item deploy\vc_redist.x64.exe
+          if ($vcr.Length -lt 10MB) { throw "vc_redist incomplete: $($vcr.Length) bytes" }
           Get-Item deploy\runtime\tools\provision.js, deploy\runtime\tools\update.js, deploy\tsplugins\dsh-desktop-demo\lib\index.js, deploy\vc_redist.x64.exe | Select-Object Name, Length
 
       # --- dsh harness (win32 native modules resolved by npm) ---------
