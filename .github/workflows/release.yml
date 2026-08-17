@@ -203,6 +203,8 @@ jobs:
           # .nsi (..\deploy\*, ..\dist\) against installer/ itself, which is
           # what the script assumes. Local builds cd into installer/ + /NOCD
           # for the same effect.
+          # NSIS does not create the output dir -> make dist/ first.
+          New-Item -ItemType Directory -Force dist | Out-Null
           & "C:\Program Files (x86)\NSIS\makensis.exe" /V2 installer\dsh-desktop.nsi
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Get-Item dist\DSHDesktop-Setup-*.exe | Select-Object Name, Length
