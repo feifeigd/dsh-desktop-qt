@@ -93,3 +93,9 @@ $LOCALAPPDATA\Programs\DSH Desktop\
     时间戳必须 == build-release 时间戳；被占用时 rename 旧文件再拷
 13. **QStringLiteral 是 UTF-16**：strings 默认查 ASCII 查不到，要用
     strings -e l 验证二进制里是否真的包含新代码字符串
+14. **build-win.bat 曾 rmdir 整个 deploy**：每次编译清掉 360M dsh 依赖树，
+    且运行中的 dsh 进程锁定的原生模块（koffi/sharp DLL）删不掉幸存，
+    其余依赖被清光 → 装进安装包的是残缺树（只有 20M）！已改为只刷新
+    exe + Qt DLL。**打包前必须验证 deploy/runtime/dsh/node_modules 里有
+    @deepseek-ai 主包**（du 应 ~360M），install-native-dsh.bat 重装后
+    不要再次跑 build-win.bat
