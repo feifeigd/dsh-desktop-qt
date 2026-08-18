@@ -263,6 +263,23 @@ void MainWindow::injectSlashCommandHook()
   if (window.__dshDesktopHook) return;
   window.__dshDesktopHook = true;
 
+  // The chat composer is the TEXTAREA. The app also has a search input
+  // (input[type=text]) earlier in DOM order - a broad selector would hit the
+  // WRONG element. Always target the textarea explicitly.
+  var chatInput = function () {
+    return document.querySelector('textarea');
+  };
+  // The chat slash menu renders inside the composer overlay slot; the search
+  // box may have its own listbox with the same aria-label - scope to the slot.
+  var chatListbox = function () {
+    var slot = document.querySelector('[data-slot="conversation.input.overlay"]');
+    if (slot) {
+      var lb = slot.querySelector('[role="listbox"]');
+      if (lb) return lb;
+    }
+    return document.querySelector('[role="listbox"][aria-label="触发候选建议"]');
+  };
+
   window.__dshUnhandled = window.__dshUnhandled || new Set();
 
   // Native replies here. A non-empty reply replaces the command in the input
@@ -271,10 +288,10 @@ void MainWindow::injectSlashCommandHook()
   // passes through to the app's own handler.
   window.__dshPluginReply = function (reply) {
     var el = document.activeElement;
-    if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT' && !el.isContentEditable)) {
+    if (!el || el.tagName !== 'TEXTAREA') {
       // after a real mouse click the focus is on the menu button, not the
       // input - fall back to the chat input so the reply is not dropped
-      el = document.querySelector('textarea, input[type="text"], [contenteditable="true"]');
+      el = chatInput();
     }
     if (!el) return;
     if (reply && reply.length) {
@@ -292,7 +309,7 @@ void MainWindow::injectSlashCommandHook()
   // be routed to desktop plugins instead of being sent to the model.
   document.addEventListener('keydown', function (e) {
     var el = document.activeElement;
-    if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT' && !el.isContentEditable)) return;
+    if (!el || el.tagName !== 'TEXTAREA') return;
     if (e.key !== 'Enter' || e.shiftKey) return;
     var v = el.value !== undefined ? el.value.trim() : el.textContent.trim();
     if (!v.startsWith('/') || v.startsWith('//')) return;
@@ -312,7 +329,7 @@ void MainWindow::injectSlashCommandHook()
     console.log('\u0001dsh:' + encodeURIComponent(text));
   };
   var ensureMenuItems = function () {
-    var listbox = document.querySelector('[role="listbox"][aria-label="触发候选建议"]');
+    var listbox = chatListbox();
     if (!listbox) return;
     var viewport = listbox.querySelector('[class*="viewport"]') || listbox;
     var sample = listbox.querySelector('[role="option"]');
@@ -342,13 +359,111 @@ void MainWindow::injectSlashCommandHook()
     });
     viewport.appendChild(btn);
   };
-  // The menu listbox is a persistent element (React toggles visibility instead
-  // of re-inserting), so insertion observers miss it. Poll cheaply instead;
-  // ensureMenuItems is idempotent and re-injects if React wipes our item.
-  setInterval(ensureMenuItems, 500);
-  ensureMenuItems(); // menu may already be open (restored draft) - inject now
+  // --- Plugin command overlay (native menu vanishes on zero-match) ---------
+  // When the harness menu is removed (e.g. typing "/sy" matches nothing
+  // native), show our own small popup under the input listing plugin
+  // commands, prefix-filtered. Click runs the command through the same
+  // console bridge. Hidden while the native listbox is visible.
+  var PLUGIN_COMMANDS = [{ name: 'sysinfo', desc: '插件：系统信息（CPU/内存）' }];
+  // Hide on real blur (delegated; survives React node replacement). Note:
+  // visibility is NOT gated on focus - React swaps the input node while
+  // typing, transiently dropping focus and making a focus gate unreliable.
+  document.addEventListener('focusout', function () {
+    var ov = document.getElementById('dsh-plugin-overlay');
+    if (ov) ov.style.display = 'none';
+  });
+  window.__dshDiag = { ovTicks: 0, ovShown: 0, ovErr: null, last: null };
+  var ensureOverlay = function () {
+    window.__dshDiag.ovTicks++;
+    try {
+      var input = chatInput();
+      var ov = document.getElementById('dsh-plugin-overlay');
+      if (!input) {
+        if (ov) ov.style.display = 'none';
+        window.__dshDiag.last = 'bail-noinput';
+        return;
+      }
+      var v = input.value !== undefined ? input.value.trim() : input.textContent.trim();
+      var nativeLb = chatListbox();
+      var nativeVisible = false;
+      if (nativeLb) {
+        var cs = getComputedStyle(nativeLb);
+        nativeVisible = cs.display !== 'none' && nativeLb.getClientRects().length > 0;
+      }
+      var frag = v.slice(1).toLowerCase();
+      var match = v.startsWith('/') && !v.startsWith('//') && !nativeVisible
+        ? PLUGIN_COMMANDS.filter(function (c) { return c.name.indexOf(frag) === 0; })
+        : [];
+      if (!match.length) {
+        if (ov) ov.style.display = 'none';
+        window.__dshDiag.last = 'bail-match:' + v + ':native' + (nativeVisible ? 1 : 0);
+        return;
+      }
+      if (!ov) {
+        ov = document.createElement('div');
+        ov.id = 'dsh-plugin-overlay';
+        ov.style.cssText = 'position:fixed;z-index:2147483000;background:#1f2430;color:#e6e9ef;'
+          + 'border:1px solid #3a4152;border-radius:8px;box-shadow:0 6px 24px rgba(0,0,0,.45);'
+          + 'font:13px/1.5 system-ui,sans-serif;padding:4px;min-width:200px;';
+        document.body.appendChild(ov);
+      }
+      ov.textContent = '';
+      match.forEach(function (c) {
+        var item = document.createElement('div');
+        item.textContent = '/' + c.name + '  ' + c.desc;
+        item.style.cssText = 'padding:6px 10px;border-radius:6px;cursor:pointer;white-space:nowrap;';
+        item.addEventListener('mouseenter', function () { item.style.background = '#2c3342'; });
+        item.addEventListener('mouseleave', function () { item.style.background = 'transparent'; });
+        item.addEventListener('click', function () {
+          ov.style.display = 'none';
+          console.log('\u0001dsh:' + encodeURIComponent('/' + c.name));
+        });
+        ov.appendChild(item);
+      });
+      var r = input.getBoundingClientRect();
+      ov.style.left = r.left + 'px';
+      ov.style.top = (r.bottom + 4) + 'px';
+      ov.style.width = Math.max(r.width, 220) + 'px';
+      ov.style.display = 'block';
+      window.__dshDiag.ovShown++;
+    } catch (e) {
+      window.__dshDiag.ovErr = e.message;
+    }
+  };
+  document.addEventListener('mousedown', function (e) {
+    var ov = document.getElementById('dsh-plugin-overlay');
+    if (ov && ov.style.display !== 'none' && !ov.contains(e.target)) ov.style.display = 'none';
+  }, true);
 
-  console.log('[dsh-desktop] slash hook injected v3');
+  // The menu listbox is a persistent element (React toggles visibility instead
+  // of re-inserting), so insertion observers miss it. NOTE: do NOT rely on a
+  // fast setInterval for updates - Chromium throttles timers to ~1/min when
+  // the page is hidden (window in tray), freezing the overlay. Drive updates
+  // from input events instead (typing only happens while the page is visible)
+  // plus delayed re-checks to catch React's async re-render, and re-arm on
+  // visibilitychange. A slow interval remains as a background safety net.
+  var recheck = function () {
+    ensureMenuItems();
+    ensureOverlay();
+  };
+  var recheckSoon = function () {
+    clearTimeout(window.__dshRecheckTimer);
+    window.__dshRecheckTimer = setTimeout(recheck, 100);
+    setTimeout(recheck, 400);
+    setTimeout(recheck, 900);
+  };
+  document.addEventListener('input', function (e) {
+    var t = e.target;
+    if (t && t.tagName === 'TEXTAREA')
+      recheckSoon();
+  }, true);
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden) recheck();
+  });
+  setInterval(recheck, 2000);
+  recheck(); // menu may already be open (restored draft) - inject now
+
+  console.log('[dsh-desktop] slash hook injected v4');
 })();
 )";
     // UTF-8: the script contains non-ASCII literals (Chinese aria-label
