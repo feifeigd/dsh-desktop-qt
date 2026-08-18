@@ -26,7 +26,26 @@
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QWebEngineView>
+#include <QWebEnginePage>
 #include <QWidget>
+
+// QWebEnginePage::javaScriptConsoleMessage is protected in Qt 6; subclass it
+// to observe page console output (used by the slash-command bridge).
+class ConsolePage : public QWebEnginePage {
+    Q_OBJECT
+public:
+    using QWebEnginePage::QWebEnginePage;
+signals:
+    void consoleMessage(const QString &message);
+protected:
+    void javaScriptConsoleMessage(JavaScriptConsoleMessageLevel level,
+                                  const QString &message, int lineNumber,
+                                  const QString &sourceID) override
+    {
+        Q_UNUSED(level); Q_UNUSED(lineNumber); Q_UNUSED(sourceID);
+        emit consoleMessage(message);
+    }
+};
 
 MainWindow::MainWindow(HarnessProcess *harness, PluginManager *plugins, QWidget *parent)
     : QMainWindow(parent)
@@ -60,6 +79,29 @@ MainWindow::MainWindow(HarnessProcess *harness, PluginManager *plugins, QWidget 
     connect(m_harness, &HarnessProcess::logLine, this, &MainWindow::onServerLog);
     connect(m_harness, &HarnessProcess::failed, this, &MainWindow::onServerFailed);
     connect(m_plugins, &PluginManager::pluginLoaded, this, &MainWindow::onPluginLoaded);
+
+    // --- Web console -> native bridge -------------------------------------
+    // The injected slash hook (see injectSlashCommandHook) routes "/cmd"
+    // typed in the chat through console.log("\u0001dsh:" + encoded). We pick
+    // it up here, dispatch it to the plugins, and push the reply back into
+    // the page via window.__dshPluginReply(). Page console output is also
+    // mirrored into the app log file (verification aid).
+    auto *consolePage = new ConsolePage(m_view);
+    m_view->setPage(consolePage);
+    connect(consolePage, &ConsolePage::consoleMessage, this,
+            [this](const QString &message) {
+                qInfo() << "[web]" << message;
+                const QString kPrefix = QStringLiteral("\u0001dsh:");
+                if (message.startsWith(kPrefix))
+                    dispatchPluginCommand(QUrl::fromPercentEncoding(message.mid(kPrefix.size()).toUtf8()));
+            });
+
+    // Navigation destroys the JS context; re-inject the hook after every
+    // page load (load() returns immediately, so inject-after-load() is racy).
+    connect(m_view, &QWebEngineView::loadFinished, this, [this](bool ok) {
+        if (ok)
+            injectSlashCommandHook();
+    });
 
     showStatus(QStringLiteral("启动 DeepSeek Harness…"));
     m_harness->start();
@@ -201,39 +243,156 @@ void MainWindow::buildPluginBar()
 
 void MainWindow::reloadPage()
 {
+    // Hook re-injection happens on loadFinished (see constructor); calling
+    // it right after load() would run against the stale JS context.
     m_view->load(QUrl(m_harness->webUrl()));
-    injectSlashCommandHook();
 }
 
 // The official web UI owns its input; we add a light "slash command" hook
-// by running a tiny script after load that listens for "/cmd ..." submissions.
-// Real DSH commands (model, tool, etc.) are handled natively in the web UI;
-// this hook only forwards unknown "/" commands to desktop plugins.
+// by running a tiny script after load that routes "/cmd ..." submissions to
+// desktop plugins. Real DSH commands (model, tool, etc.) are handled natively
+// in the web UI; this hook only forwards "/" commands that plugins handle.
+//
+// Channel: page -> native is console.log("\u0001dsh:" + encodeURIComponent(text)),
+// consumed in the constructor via javaScriptConsoleMessage. Native -> page is
+// window.__dshPluginReply(<text>) delivered via runJavaScript.
 void MainWindow::injectSlashCommandHook()
 {
     static const char *kScript = R"(
 (() => {
   if (window.__dshDesktopHook) return;
   window.__dshDesktopHook = true;
-  const fwd = (text) => {
-    // forward to native side; implemented via QWebChannel would be ideal,
-    // here we just route through the URL fragment as a minimal demo signal.
-    window.location.hash = '#dsh-plugin:' + encodeURIComponent(text);
-  };
-  document.addEventListener('keydown', (e) => {
-    const el = document.activeElement;
-    if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT')) return;
-    if (e.key === 'Enter' && !e.shiftKey) {
-      const v = el.value.trim();
-      if (v.startsWith('/') && !v.startsWith('//')) {
-        // Let the app's own handler also see it; don't block default.
-      }
+
+  window.__dshUnhandled = window.__dshUnhandled || new Set();
+
+  // Native replies here. A non-empty reply replaces the command in the input
+  // (user can then Enter to send the result to the chat, or copy it). An
+  // empty reply marks the command unhandled: the next Enter on the same text
+  // passes through to the app's own handler.
+  window.__dshPluginReply = function (reply) {
+    var el = document.activeElement;
+    if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT' && !el.isContentEditable)) {
+      // after a real mouse click the focus is on the menu button, not the
+      // input - fall back to the chat input so the reply is not dropped
+      el = document.querySelector('textarea, input[type="text"], [contenteditable="true"]');
     }
-  });
-  console.log('[dsh-desktop] slash hook injected');
+    if (!el) return;
+    if (reply && reply.length) {
+      if (el.isContentEditable) el.textContent = reply;
+      else el.value = reply;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.focus();
+    } else {
+      var v = el.value !== undefined ? el.value.trim() : el.textContent.trim();
+      if (v) window.__dshUnhandled.add(v);
+    }
+  };
+
+  // Capture phase: runs BEFORE the app's own key handlers, so "/cmd" text can
+  // be routed to desktop plugins instead of being sent to the model.
+  document.addEventListener('keydown', function (e) {
+    var el = document.activeElement;
+    if (!el || (el.tagName !== 'TEXTAREA' && el.tagName !== 'INPUT' && !el.isContentEditable)) return;
+    if (e.key !== 'Enter' || e.shiftKey) return;
+    var v = el.value !== undefined ? el.value.trim() : el.textContent.trim();
+    if (!v.startsWith('/') || v.startsWith('//')) return;
+    if (window.__dshUnhandled.has(v)) return; // tried before, let the app handle it
+    e.preventDefault();
+    e.stopPropagation();
+    console.log('\u0001dsh:' + encodeURIComponent(v));
+  }, true);
+
+  // --- Plugin commands in the native slash menu ---------------------------
+  // The harness web UI renders its own "/" suggestion listbox; we can't
+  // register into its internal command registry, so append our plugin
+  // commands to the rendered listbox instead. Selectors are stable
+  // (role/aria-label); item classes are cloned from a live item so hashed
+  // class names (harness build-specific) never need to be hardcoded.
+  var runPluginCmd = function (text) {
+    console.log('\u0001dsh:' + encodeURIComponent(text));
+  };
+  var ensureMenuItems = function () {
+    var listbox = document.querySelector('[role="listbox"][aria-label="触发候选建议"]');
+    if (!listbox) return;
+    var viewport = listbox.querySelector('[class*="viewport"]') || listbox;
+    var sample = listbox.querySelector('[role="option"]');
+    if (!sample) return;                     // items not rendered yet; retry on next mutation
+    if (viewport.querySelector('button[data-dsh-plugin-cmd="sysinfo"]')) return; // already injected for this render
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.role = 'option';
+    btn.className = (sample.className || '').replace(/\s*_3e4SsG_active\s*/, '');
+    btn.dataset.dshPluginCmd = 'sysinfo';
+    btn.title = 'DSH Desktop 插件命令';
+    var name = document.createElement('span');
+    name.textContent = 'sysinfo';
+    var desc = document.createElement('span');
+    desc.textContent = '插件：系统信息（CPU/内存）';
+    if (sample.children.length > 0) name.className = sample.children[0].className;
+    if (sample.children.length > 1) desc.className = sample.children[1].className;
+    btn.appendChild(name);
+    btn.appendChild(desc);
+    var fire = function (ev) {
+      if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+      runPluginCmd('/sysinfo');
+    };
+    btn.addEventListener('click', fire);
+    btn.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.stopPropagation(); runPluginCmd('/sysinfo'); }
+    });
+    viewport.appendChild(btn);
+  };
+  // The menu listbox is a persistent element (React toggles visibility instead
+  // of re-inserting), so insertion observers miss it. Poll cheaply instead;
+  // ensureMenuItems is idempotent and re-injects if React wipes our item.
+  setInterval(ensureMenuItems, 500);
+  ensureMenuItems(); // menu may already be open (restored draft) - inject now
+
+  console.log('[dsh-desktop] slash hook injected v3');
 })();
 )";
-    m_view->page()->runJavaScript(QString::fromLatin1(kScript));
+    // UTF-8: the script contains non-ASCII literals (Chinese aria-label
+    // selector, item text); fromLatin1 would mojibake them and the menu
+    // injection would silently never match.
+    m_view->page()->runJavaScript(QString::fromUtf8(kScript));
+}
+
+void MainWindow::dispatchPluginCommand(const QString &text)
+{
+    if (!text.startsWith(QLatin1Char('/')))
+        return;
+
+    // text is "/cmd arg1 arg2 ..." (already percent-decoded).
+    QString cmd, args;
+    const QString body = text.mid(1); // strip leading '/'
+    const int sp = body.indexOf(QLatin1Char(' '));
+    if (sp > 0) {
+        cmd = body.left(sp);
+        args = body.mid(sp + 1);
+    } else {
+        cmd = body;
+    }
+
+    const QString reply = m_plugins->runCommand(cmd, args);
+
+    // Always deliver a reply (even empty) so the JS side can mark the command
+    // as unhandled. Escape into a safe JS string literal (JSON-style).
+    QString esc = reply;
+    esc.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
+    esc.replace(QLatin1Char('"'), QStringLiteral("\\\""));
+    esc.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
+    esc.replace(QLatin1Char('\r'), QStringLiteral("\\r"));
+    esc.replace(QLatin1Char('\t'), QStringLiteral("\\t"));
+    const QString js = QStringLiteral(
+        "if (window.__dshPluginReply) window.__dshPluginReply(\"%1\");").arg(esc);
+    m_view->page()->runJavaScript(js);
+
+    if (!reply.isEmpty()) {
+        qInfo() << "[plugin] /" << cmd << "handled, reply" << reply.size() << "chars";
+    } else {
+        qInfo() << "[plugin] /" << cmd << "not handled by any plugin";
+        showStatus(QStringLiteral("没有插件处理 /%1").arg(cmd));
+    }
 }
 
 void MainWindow::showStatus(const QString &msg, int timeoutMs)
@@ -392,3 +551,5 @@ void MainWindow::onUpdateCheckFinished(int exitCode)
     showStatus(QStringLiteral("正在下载并安装 %1（可能需要几分钟）…").arg(latest));
     m_updateProc->start(nodeBin, {script, QStringLiteral("apply"), latest});
 }
+
+#include "MainWindow.moc"

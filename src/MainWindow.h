@@ -49,6 +49,7 @@ private:
     void buildTray();
     void buildPluginBar();
     void injectSlashCommandHook();
+    void dispatchPluginCommand(const QString &text);
     void showStatus(const QString &msg, int timeoutMs = 5000);
 
     HarnessProcess *m_harness;
