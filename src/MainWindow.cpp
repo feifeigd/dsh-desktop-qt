@@ -309,7 +309,13 @@ void MainWindow::injectSlashCommandHook()
   // be routed to desktop plugins instead of being sent to the model.
   document.addEventListener('keydown', function (e) {
     var el = document.activeElement;
-    if (!el || el.tagName !== 'TEXTAREA') return;
+    if (!el || el.tagName !== 'TEXTAREA') {
+      // Focus can be lost (e.g. after clicking an overlay item, which blurs
+      // the textarea). Keep "/cmd" routing working; don't hijack normal Enter.
+      var ta = chatInput();
+      if (!ta || !(ta.value || '').trim().startsWith('/')) return;
+      el = ta;
+    }
     if (e.key !== 'Enter' || e.shiftKey) return;
     var v = el.value !== undefined ? el.value.trim() : el.textContent.trim();
     if (!v.startsWith('/') || v.startsWith('//')) return;
@@ -351,6 +357,9 @@ void MainWindow::injectSlashCommandHook()
     btn.appendChild(desc);
     var fire = function (ev) {
       if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+      window.__dshOvSuppress = Date.now() + 1000;
+      var ta = chatInput();
+      if (ta) ta.focus();
       runPluginCmd('/sysinfo');
     };
     btn.addEventListener('click', fire);
@@ -368,13 +377,14 @@ void MainWindow::injectSlashCommandHook()
   // Hide on real blur (delegated; survives React node replacement). Note:
   // visibility is NOT gated on focus - React swaps the input node while
   // typing, transiently dropping focus and making a focus gate unreliable.
-  document.addEventListener('focusout', function () {
-    var ov = document.getElementById('dsh-plugin-overlay');
-    if (ov) ov.style.display = 'none';
-  });
+  // NOTE: no focusout-hide here - a real click on an overlay item blurs the
+  // textarea FIRST (mousedown), and hiding the overlay on focusout would drop
+  // the subsequent click on a display:none element. mousedown-outside + the
+  // value check in ensureOverlay are sufficient.
   window.__dshDiag = { ovTicks: 0, ovShown: 0, ovErr: null, last: null };
   var ensureOverlay = function () {
     window.__dshDiag.ovTicks++;
+    if (window.__dshOvSuppress && window.__dshOvSuppress > Date.now()) return;
     try {
       var input = chatInput();
       var ov = document.getElementById('dsh-plugin-overlay');
@@ -416,6 +426,12 @@ void MainWindow::injectSlashCommandHook()
         item.addEventListener('mouseleave', function () { item.style.background = 'transparent'; });
         item.addEventListener('click', function () {
           ov.style.display = 'none';
+          // A real click blurred the textarea (mousedown on a non-focusable
+          // div). Restore focus so Enter keeps working, and suppress the
+          // overlay re-showing while the reply replaces the "/cmd" text.
+          window.__dshOvSuppress = Date.now() + 1000;
+          var ta = chatInput();
+          if (ta) ta.focus();
           console.log('\u0001dsh:' + encodeURIComponent('/' + c.name));
         });
         ov.appendChild(item);
